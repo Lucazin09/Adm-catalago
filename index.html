@@ -25,6 +25,11 @@
   <script type="text/babel" data-presets="admin-preset">
     const { useEffect, useMemo, useState } = React;
 
+    const SUPABASE_PROJECT_ID = "xbfpphyghvtaqwuhqwep";
+    const SUPABASE_REST_URL = "https://xbfpphyghvtaqwuhqwep.supabase.co/rest/v1";
+    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhiZnBwaHlnaHZ0YXF3dWhxd2VwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIxNjQ5MTYsImV4cCI6MjA5Nzc0MDkxNn0.iAV8-YxIDjsQg3Se9cQsjQCa76DSR0ZQ89rWl-26fv0";
+    const SUPABASE_SERVICE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhiZnBwaHlnaHZ0YXF3dWhxd2VwIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MjE2NDkxNiwiZXhwIjoyMDk3NzQwOTE2fQ.Kd_nLDdGGMBg9SQxWJG4YWHFf-IGwmlzijf0xr7hebA";
+
     const SITE_TEMPLATE = `<!DOCTYPE html>
 <html lang="pt-BR" data-theme="dark">
 <head>
@@ -1284,6 +1289,136 @@ render();
       };
     }
 
+    function supabaseHeaders(extra = {}, useService = false) {
+      const key = useService ? SUPABASE_SERVICE_KEY : SUPABASE_ANON_KEY;
+      return {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+        ...extra
+      };
+    }
+
+    async function supabaseRequest(path, options = {}) {
+      const isWrite = options.method && options.method !== "GET";
+      const res = await fetch(`${SUPABASE_REST_URL}/${path}`, {
+        ...options,
+        headers: supabaseHeaders({
+          Accept: "application/json",
+          ...(options.body ? { "Content-Type": "application/json" } : {}),
+          ...(options.headers || {})
+        }, isWrite)
+      });
+      if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
+      if (res.status === 204) return null;
+      const text = await res.text();
+      return text ? JSON.parse(text) : null;
+    }
+
+    function payloadToState(payload) {
+      const fallback = parseInitial(SITE_TEMPLATE);
+      if (!payload) return fallback;
+      return {
+        ...fallback,
+        eyebrow: payload.brand_eyebrow ?? fallback.eyebrow,
+        brand: payload.brand_name ?? fallback.brand,
+        sub: payload.brand_subtitle ?? fallback.sub,
+        intro: payload.intro_text ?? fallback.intro,
+        servicesHeadTitle: payload.services_title ?? fallback.servicesHeadTitle,
+        servicesHeadSub: payload.services_subtitle ?? fallback.servicesHeadSub,
+        resultsHeadTitle: payload.results_title ?? fallback.resultsHeadTitle,
+        resultsHeadSub: payload.results_subtitle ?? fallback.resultsHeadSub,
+        waEyebrow: payload.whatsapp_eyebrow ?? fallback.waEyebrow,
+        waTitle: payload.whatsapp_title ?? fallback.waTitle,
+        waSub: payload.whatsapp_subtitle ?? fallback.waSub,
+        waNumber: payload.whatsapp_number ?? fallback.waNumber,
+        footer: payload.footer_text ?? fallback.footer,
+        services: Array.isArray(payload.services) && payload.services.length
+          ? payload.services.map((srv, i) => ({
+              id: srv.legacyId || srv.id || Date.now() + i,
+              dbId: srv.id || null,
+              cat: srv.cat || "Servico",
+              name: srv.name || "Sem nome",
+              desc: srv.desc || "",
+              price: srv.price || "Consulte",
+              dur: srv.dur || "-",
+              img: srv.img || ""
+            }))
+          : fallback.services,
+        slides: Array.isArray(payload.slides) && payload.slides.length
+          ? payload.slides.map((slide) => slide.src || slide)
+          : fallback.slides
+      };
+    }
+
+    async function loadSupabaseState() {
+      const rows = await supabaseRequest("site_payload?select=*&id=eq.main&limit=1");
+      return payloadToState(rows?.[0]);
+    }
+
+    async function saveSupabaseState(state) {
+      await supabaseRequest("site_settings?on_conflict=id", {
+        method: "POST",
+        headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+        body: JSON.stringify([{
+          id: "main",
+          brand_eyebrow: state.eyebrow,
+          brand_name: state.brand,
+          brand_subtitle: state.sub,
+          intro_text: state.intro,
+          services_title: state.servicesHeadTitle,
+          services_subtitle: state.servicesHeadSub,
+          results_title: state.resultsHeadTitle,
+          results_subtitle: state.resultsHeadSub,
+          whatsapp_eyebrow: state.waEyebrow,
+          whatsapp_title: state.waTitle,
+          whatsapp_subtitle: state.waSub,
+          whatsapp_number: state.waNumber,
+          footer_text: state.footer
+        }])
+      });
+
+      await supabaseRequest("services?id=not.is.null", {
+        method: "DELETE",
+        headers: { Prefer: "return=minimal" }
+      });
+
+      if (state.services.length) {
+        await supabaseRequest("services", {
+          method: "POST",
+          headers: { Prefer: "return=minimal" },
+          body: JSON.stringify(state.services.map((srv, i) => ({
+            legacy_id: Number.isFinite(Number(srv.id)) ? Number(srv.id) : null,
+            category: srv.cat || "Servico",
+            name: srv.name || "Sem nome",
+            description: srv.desc || "",
+            price_label: srv.price || "Consulte",
+            duration_label: srv.dur || "-",
+            image_url: srv.img || null,
+            sort_order: (i + 1) * 10,
+            is_active: true
+          })))
+        });
+      }
+
+      await supabaseRequest("result_slides?id=not.is.null", {
+        method: "DELETE",
+        headers: { Prefer: "return=minimal" }
+      });
+
+      if (state.slides.length) {
+        await supabaseRequest("result_slides", {
+          method: "POST",
+          headers: { Prefer: "return=minimal" },
+          body: JSON.stringify(state.slides.map((src, i) => ({
+            image_url: src,
+            alt_text: `Resultado ${i + 1}`,
+            sort_order: (i + 1) * 10,
+            is_active: true
+          })))
+        });
+      }
+    }
+
     function setText(doc, sel, val) {
       const el = doc.querySelector(sel);
       if (el) el.textContent = val;
@@ -1469,11 +1604,33 @@ render();
       const [user, setUser] = useState(null);
       const [authReady, setAuthReady] = useState(false);
       const [state, setState] = useState(null);
+      const [saving, setSaving] = useState(false);
+      const [status, setStatus] = useState("");
 
       useEffect(() => {
-        setState(parseInitial(SITE_TEMPLATE));
-        setUser(localStorage.getItem("iza_admin_user"));
-        setAuthReady(true);
+        let active = true;
+        async function start() {
+          try {
+            const remoteState = await loadSupabaseState();
+            if (active) {
+              setState(remoteState);
+              setStatus("Conectado ao Supabase.");
+            }
+          } catch (err) {
+            console.warn(err);
+            if (active) {
+              setState(parseInitial(SITE_TEMPLATE));
+              setStatus("Nao foi possivel carregar o Supabase. Usando dados locais.");
+            }
+          } finally {
+            if (active) {
+              setUser(localStorage.getItem("iza_admin_user"));
+              setAuthReady(true);
+            }
+          }
+        }
+        start();
+        return () => { active = false; };
       }, []);
 
       const logout = () => {
@@ -1523,6 +1680,21 @@ render();
         updateService(i, { img: url });
       };
 
+      const saveAll = async () => {
+        if (!state) return;
+        setSaving(true);
+        setStatus("Salvando no Supabase...");
+        try {
+          await saveSupabaseState(state);
+          setStatus("Salvo no Supabase. O site principal ja pode ler essas alteracoes.");
+        } catch (err) {
+          console.error(err);
+          setStatus(`Erro ao salvar: ${err.message}`);
+        } finally {
+          setSaving(false);
+        }
+      };
+
 
       const summary = useMemo(() => {
         if (!state) return "";
@@ -1548,6 +1720,9 @@ render();
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="hidden text-xs text-zinc-400 sm:inline">Olá, <span className="text-amber-200">{user}</span></span>
+                <button disabled={saving} onClick={saveAll} className="rounded-md bg-amber-300 px-3 py-2 text-xs font-medium text-zinc-950 hover:bg-amber-200 disabled:cursor-wait disabled:opacity-60">
+                  {saving ? "Salvando..." : "Salvar no Supabase"}
+                </button>
                 <button onClick={logout} className="rounded-md border border-zinc-700 px-3 py-2 text-xs text-zinc-300 hover:border-red-400 hover:text-red-300">Sair</button>
 
               </div>
@@ -1555,6 +1730,11 @@ render();
           </header>
 
           <main className="mx-auto max-w-6xl space-y-6 px-6 py-8">
+            {status && (
+              <div className="rounded-md border border-amber-200/20 bg-zinc-900/60 px-4 py-3 text-sm text-zinc-300">
+                {status}
+              </div>
+            )}
             <Section title="Cabeçalho">
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field label="Sobre-título" value={state.eyebrow} onChange={(v) => update("eyebrow", v)} />
